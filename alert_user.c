@@ -16,6 +16,7 @@
 #include <fcntl.h>
 #include <string.h>
 #include <time.h>
+#include <poll.h>
 #include <sys/ioctl.h>
 #include <linux/gpio.h>
 
@@ -108,8 +109,12 @@ int main(void)
         set_output(fd_yellow, 1);
         set_output(fd_buzzer, 1);
 
-        /* Step 3: Wait for button press */
+        /* Step 3: Drain any leftover button events, then wait for new press */
         struct gpioevent_data event;
+        struct pollfd pfd = { .fd = fd_button, .events = POLLIN };
+        while (poll(&pfd, 1, 0) > 0) {
+            read(fd_button, &event, sizeof(event));
+        }
         read(fd_button, &event, sizeof(event));
 
         /* Button pressed: buzzer OFF, red LED ON for 2 seconds */
