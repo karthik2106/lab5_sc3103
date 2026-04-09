@@ -8,7 +8,7 @@ modules:
 	make -C $(KDIR) M=$(PWD) modules
 
 alert_user: alert_user.c
-	gcc -o alert_user alert_user.c
+	gcc -o alert_user alert_user.c -lpthread
 
 clean:
 	make -C $(KDIR) M=$(PWD) clean

@@ -17,6 +17,7 @@
 #include <string.h>
 #include <time.h>
 #include <poll.h>
+#include <pthread.h>
 #include <sys/ioctl.h>
 #include <linux/gpio.h>
 
@@ -27,6 +28,7 @@
 #define GPIO_BUTTON 11
 
 static int chip_fd;
+static volatile int buzzer_on = 0;
 
 /* Request a single GPIO line as output, return the line fd */
 static int request_output(unsigned int offset, const char *label, int default_val)
@@ -52,6 +54,23 @@ static void set_output(int fd, int value)
     struct gpiohandle_data data;
     data.values[0] = value;
     ioctl(fd, GPIOHANDLE_SET_LINE_VALUES_IOCTL, &data);
+}
+
+/* Buzzer thread: toggles GPIO18 at ~2kHz to produce a square wave */
+static void *buzzer_thread(void *arg)
+{
+    int fd = *(int *)arg;
+    while (1) {
+        if (buzzer_on) {
+            set_output(fd, 1);
+            usleep(250);  /* ~2kHz tone */
+            set_output(fd, 0);
+            usleep(250);
+        } else {
+            usleep(1000);
+        }
+    }
+    return NULL;
 }
 
 /* Request a GPIO line for rising-edge events, return the event fd */
@@ -94,6 +113,10 @@ int main(void)
         return EXIT_FAILURE;
     }
 
+    /* Start buzzer thread */
+    pthread_t bz_thread;
+    pthread_create(&bz_thread, NULL, buzzer_thread, &fd_buzzer);
+
     printf("Timed GPIO Alert System started. Press Ctrl+C to exit.\n");
 
     while (1) {
@@ -107,7 +130,7 @@ int main(void)
         printf("Yellow LED ON, Buzzer ON. Waiting for button press...\n");
         set_output(fd_green, 0);
         set_output(fd_yellow, 1);
-        set_output(fd_buzzer, 1);
+        buzzer_on = 1;  /* start square wave */
 
         /* Step 3: Drain any leftover button events, then wait for new press */
         struct gpioevent_data event;
@@ -119,6 +142,7 @@ int main(void)
 
         /* Button pressed: buzzer OFF, red LED ON for 2 seconds */
         printf("Button pressed! Buzzer OFF, Red LED ON for 2 seconds.\n");
+        buzzer_on = 0;  /* stop square wave */
         set_output(fd_buzzer, 0);
         set_output(fd_yellow, 0);
         set_output(fd_red, 1);

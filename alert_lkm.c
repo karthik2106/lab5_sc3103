@@ -16,6 +16,8 @@
 #include <linux/gpio.h>
 #include <linux/interrupt.h>
 #include <linux/timer.h>
+#include <linux/hrtimer.h>
+#include <linux/ktime.h>
 #include <linux/jiffies.h>
 #include <linux/random.h>
 
@@ -26,28 +28,54 @@
 #define GPIO_BUTTON 11
 
 static unsigned int irq_number;
+static int buzzer_state = 0;
+static int buzzer_active = 0;
 
-/* State machine:
- *   STATE_GREEN  - Green LED on, waiting for random delay
- *   STATE_ALERT  - Yellow LED + buzzer on, waiting for button press
- *   STATE_RED    - Red LED on for 2 seconds after button press
- */
 enum alert_state { STATE_GREEN, STATE_ALERT, STATE_RED };
 static enum alert_state state = STATE_GREEN;
 
 static struct timer_list delay_timer;
 static struct timer_list red_timer;
+static struct hrtimer buzzer_timer;
 
 /* Forward declarations */
 static void start_green_phase(void);
 
+/* High-resolution timer callback to toggle buzzer at ~2kHz */
+static enum hrtimer_restart buzzer_timer_callback(struct hrtimer *timer)
+{
+    if (!buzzer_active) {
+        gpio_set_value(GPIO_BUZZER, 0);
+        return HRTIMER_NORESTART;
+    }
+
+    buzzer_state = !buzzer_state;
+    gpio_set_value(GPIO_BUZZER, buzzer_state);
+
+    hrtimer_forward_now(timer, ktime_set(0, 250000)); /* 250us = ~2kHz */
+    return HRTIMER_RESTART;
+}
+
+static void buzzer_start(void)
+{
+    buzzer_active = 1;
+    buzzer_state = 0;
+    hrtimer_start(&buzzer_timer, ktime_set(0, 250000), HRTIMER_MODE_REL);
+}
+
+static void buzzer_stop(void)
+{
+    buzzer_active = 0;
+    hrtimer_cancel(&buzzer_timer);
+    gpio_set_value(GPIO_BUZZER, 0);
+}
+
 /* Called when the random delay expires: transition to alert phase */
 static void delay_timer_callback(struct timer_list *t)
 {
-    /* Turn off green, turn on yellow + buzzer */
     gpio_set_value(GPIO_GREEN, 0);
     gpio_set_value(GPIO_YELLOW, 1);
-    gpio_set_value(GPIO_BUZZER, 1);
+    buzzer_start();
     state = STATE_ALERT;
     printk(KERN_INFO "alert_lkm: Alert phase - yellow LED and buzzer ON\n");
 }
@@ -69,7 +97,7 @@ static void start_green_phase(void)
     gpio_set_value(GPIO_GREEN, 0);
     gpio_set_value(GPIO_YELLOW, 0);
     gpio_set_value(GPIO_RED, 0);
-    gpio_set_value(GPIO_BUZZER, 0);
+    buzzer_stop();
 
     /* Random delay 1-10 seconds */
     get_random_bytes(&delay, sizeof(delay));
@@ -88,15 +116,13 @@ static irq_handler_t button_isr(unsigned int irq, void *dev_id, struct pt_regs *
     if (state != STATE_ALERT)
         return (irq_handler_t) IRQ_HANDLED;
 
-    /* Turn off buzzer and yellow, turn on red */
-    gpio_set_value(GPIO_BUZZER, 0);
+    buzzer_stop();
     gpio_set_value(GPIO_YELLOW, 0);
     gpio_set_value(GPIO_RED, 1);
     state = STATE_RED;
 
     printk(KERN_INFO "alert_lkm: Button pressed! Red LED ON for 2 seconds\n");
 
-    /* Start 2 second timer for red LED */
     mod_timer(&red_timer, jiffies + msecs_to_jiffies(2000));
 
     return (irq_handler_t) IRQ_HANDLED;
@@ -145,6 +171,8 @@ static int __init alert_init(void)
     /* Set up timers */
     timer_setup(&delay_timer, delay_timer_callback, 0);
     timer_setup(&red_timer, red_timer_callback, 0);
+    hrtimer_init(&buzzer_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+    buzzer_timer.function = buzzer_timer_callback;
 
     /* Start the first cycle */
     start_green_phase();
@@ -157,6 +185,7 @@ static void __exit alert_exit(void)
     /* Clean up timers */
     del_timer_sync(&delay_timer);
     del_timer_sync(&red_timer);
+    buzzer_stop();
 
     /* Turn everything off */
     gpio_set_value(GPIO_GREEN, 0);
