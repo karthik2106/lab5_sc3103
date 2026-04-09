@@ -1,16 +1,15 @@
-obj-m += hello_lkm.o
-obj-m += gpio_lkm.o
+obj-m += alert_lkm.o
 
 KDIR := /lib/modules/$(shell uname -r)/build
 
-all: modules gpio
+all: modules alert_user
 
 modules:
 	make -C $(KDIR) M=$(PWD) modules
 
-gpio: gpio.c
-	gcc -o gpio gpio.c
+alert_user: alert_user.c
+	gcc -o alert_user alert_user.c
 
 clean:
 	make -C $(KDIR) M=$(PWD) clean
-	rm -f gpio
+	rm -f alert_user
